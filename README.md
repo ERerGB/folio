@@ -2,7 +2,7 @@
 
 A reusable Codex skill for turning a selected conversation or note series into a chaptered, versioned EPUB booklet and delivering it to an e-reader. The content workflow is shared; the transfer route depends on the brand and model. The repository is named `ebook`, and the skill entry is `$ebook`.
 
-**中文简介：** 用 `$ebook` 把指定对话整理成分章节 EPUB。后续补充内容会沿用同一本小册的章节和版次；传到阅读器时按品牌选择官方路径，并记录实际验证到的交付状态。
+**中文简介：** 用 `$ebook` 把指定对话整理成分章节 EPUB，并默认传到阅读器、核实交付。后续补充内容会沿用同一本小册的章节和版次。只有明确说“只要草稿／文件”时才跳过传送。
 
 ## Install
 
@@ -14,11 +14,11 @@ git clone https://github.com/ERerGB/ebook.git ~/.codex/skills/ebook
 
 Then invoke it in a Codex task:
 
-> `$ebook` Turn this conversation into a short booklet and send the next edition to my Kobo.
+> `$ebook` Turn this conversation into a short booklet for my Kobo.
 
-> `$ebook` 把这段讨论续写进原来的小册，并准备传到我的 BOOX。
+> `$ebook` 把这段讨论续写进原来的小册，给我的 BOOX 看。
 
-The skill can locate and update an existing booklet object; tell it which conversation or local notes to use and which device you intend to read on. A plain ChatGPT conversation may not have access to local Codex skills; start the task in Codex and reference that conversation when available.
+The skill can locate and update an existing booklet object. An explicit `$ebook` invocation includes delivery by default, even if the request does not repeat "send." It looks for a known reader in the conversation or delivery history and asks for missing connection details early. Tell it which conversation or local notes to use and which device you intend to read on when that is not already known. A plain ChatGPT conversation may not have access to local Codex skills; start the task in Codex and reference that conversation when available.
 
 ## What it maintains
 
@@ -55,7 +55,7 @@ Existing tools cover different parts of the workflow: [EPUBCheck](https://github
 ## Boundaries
 
 - Only BOOXDrop's observed LAN endpoint is automated here. It is not a vendor-supported public API and can change with firmware.
-- A delivery record states what was verified: cloud upload, device listing, library indexing, or opening the book. These are distinct events.
+- A delivery record states what was verified: cloud upload, device listing, library indexing, or opening the book. These are distinct events. The workflow remains pending until transfer is verified or the user chooses a draft-only result.
 - Never publish private source conversations, device IP addresses, account tokens, or booklet objects in this repository.
 - Older editions are retained; removing or replacing device files is a separate user decision because reading positions and annotations may depend on them.
 

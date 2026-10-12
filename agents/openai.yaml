@@ -1,4 +1,4 @@
 interface:
   display_name: "Ebook Booklet"
-  short_description: "Turn conversations into versioned EPUBs for e-readers"
-  default_prompt: "Use $ebook to turn this conversation into a chaptered EPUB booklet and prepare the appropriate transfer to my e-reader."
+  short_description: "Create, update, and deliver EPUB booklets to e-readers"
+  default_prompt: "Use $ebook to turn this conversation into a chaptered booklet for my e-reader."
