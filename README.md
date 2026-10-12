@@ -59,4 +59,4 @@ Existing tools cover different parts of the workflow: [EPUBCheck](https://github
 - Never publish private source conversations, device IP addresses, account tokens, or booklet objects in this repository.
 - Older editions are retained; removing or replacing device files is a separate user decision because reading positions and annotations may depend on them.
 
-MIT licensed. This repository is independent of the listed reader brands and services.
+Licensed under Apache-2.0. This repository is independent of the listed reader brands and services.
