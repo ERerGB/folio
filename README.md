@@ -22,7 +22,7 @@ The skill can locate and update an existing booklet object. An explicit `$ebook`
 
 ## What it maintains
 
-An object contains `book.json` for identity and chapter order, Markdown chapter files for editable text, `editions/` for EPUB and HTML, and `lifecycle.json` for releases and deliveries. This repository contains the skill and helper only; keep private book objects outside the repository.
+An object contains `book.json` for identity, chapter order, and per-chapter source references; Markdown chapter files for editable text; `editions/` for EPUB, HTML, and private source snapshots; and `lifecycle.json` for releases and staged deliveries. This repository contains the skill and helper only; keep private book objects outside the repository.
 
 The standard-library helper supports:
 
@@ -32,7 +32,7 @@ init → edit chapters → build → inspect/validate → deliver → record del
 after delivery + new content → next numbered edition
 ```
 
-Run `python3 scripts/booklet.py --help` for commands. `build` can export the EPUB and HTML to a chosen folder. `send-booxdrop` is an optional adapter for a currently observed BOOXDrop LAN interface; other brands use their documented app, cloud, local Wi-Fi, or USB route and `record-delivery` after destination verification. The [object format](references/object-format.md) shows exact commands.
+Run `python3 scripts/booklet.py --help` for commands. `build` can export the EPUB and HTML to a chosen folder while keeping source snapshots private. `send-booxdrop` is an optional adapter for a currently observed BOOXDrop LAN interface; other brands use their documented app, cloud, local Wi-Fi, or USB route and `record-delivery` after destination verification. A delivery advances through `uploaded`, `device-file`, `library-indexed`, and `opened` as evidence becomes available. The [object format](references/object-format.md) shows exact commands.
 
 ## Seven-brand route survey
 
@@ -55,7 +55,7 @@ Existing tools cover different parts of the workflow: [EPUBCheck](https://github
 ## Boundaries
 
 - Only BOOXDrop's observed LAN endpoint is automated here. It is not a vendor-supported public API and can change with firmware.
-- A delivery record states what was verified: cloud upload, device listing, library indexing, or opening the book. These are distinct events. The workflow remains pending until transfer is verified or the user chooses a draft-only result.
+- A delivery record states what was verified: cloud upload, device listing, library indexing, or opening the book. These are distinct stages. Device delivery remains unconfirmed while only an upload is visible.
 - Never publish private source conversations, device IP addresses, account tokens, or booklet objects in this repository.
 - Older editions are retained; removing or replacing device files is a separate user decision because reading positions and annotations may depend on them.
 

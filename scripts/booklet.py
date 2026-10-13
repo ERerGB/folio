@@ -20,6 +20,7 @@ from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 
 STYLE = """html{background:#fff;color:#111}body{max-width:42em;margin:0 auto;padding:1.2em 1.2em 4em;font-family:serif;font-size:1.05em;line-height:1.8}h1,h2,h3{line-height:1.35}h1{font-size:1.6em}h2{font-size:1.25em}h3{font-size:1.1em}p{margin:1em 0}blockquote{border-left:.16em solid #555;margin:1.3em 0;padding:0 0 0 1em}li{margin:.35em 0}a{color:inherit}.subtitle,.note{color:#444}.chapter{break-before:page}"""
+DELIVERY_STAGES = ("uploaded", "device-file", "library-indexed", "opened")
 
 
 def now() -> str:
@@ -65,7 +66,20 @@ def load_book(root: Path) -> tuple[dict, list[dict]]:
         path = (root / item["file"]).resolve()
         if not path.is_relative_to(root.resolve()) or not path.is_file():
             raise ValueError(f"Chapter file missing or outside object: {item['file']}")
-        chapters.append({"id": chapter_id, "title": item["title"], "text": path.read_text(encoding="utf-8")})
+        chapter = {"id": chapter_id, "title": item["title"], "text": path.read_text(encoding="utf-8")}
+        if "source_refs" in item:
+            refs = item["source_refs"]
+            if not isinstance(refs, list) or any(
+                not isinstance(ref, dict) or not all(isinstance(ref.get(key), str) and ref[key].strip()
+                                                     for key in ("kind", "id")) for ref in refs
+            ):
+                raise ValueError(f"Chapter {chapter_id} needs source_refs with kind and id")
+            chapter["source_refs"] = refs
+        if "revision_note" in item:
+            if not isinstance(item["revision_note"], str):
+                raise ValueError(f"Chapter {chapter_id} revision_note must be text")
+            chapter["revision_note"] = item["revision_note"]
+        chapters.append(chapter)
     return book, chapters
 
 
@@ -74,6 +88,15 @@ def content_hash(book: dict, chapters: list[dict]) -> str:
                "language": book.get("language", "en"), "description": book.get("description", ""),
                "chapters": chapters}
     return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def source_snapshot(book: dict, chapters: list[dict], edition: int, created_at: str) -> dict:
+    return {"book_id": book["id"], "edition": edition, "created_at": created_at,
+            "chapters": [{"id": ch["id"], "title": ch["title"],
+                          "content_sha256": hashlib.sha256(ch["text"].encode("utf-8")).hexdigest(),
+                          "source_refs": ch.get("source_refs", []),
+                          "revision_note": ch.get("revision_note", "")}
+                         for ch in chapters]}
 
 
 def inline(text: str) -> str:
@@ -217,26 +240,51 @@ def select_candidate(root: Path, state: dict) -> dict:
     path = artifact_path(root, candidate["epub_path"])
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != candidate["epub_sha256"]:
         raise ValueError("Built EPUB missing or changed; rebuild before delivery")
+    if "sources_path" in candidate:
+        sources = artifact_path(root, candidate["sources_path"])
+        if not sources.is_file() or hashlib.sha256(sources.read_bytes()).hexdigest() != candidate["sources_sha256"]:
+            raise ValueError("Edition source snapshot missing or changed; restore it or revise the edition")
     return candidate
 
 
 def record_delivery(root: Path, state: dict, candidate: dict, device: str, transport: str,
                     remote_path: str, verified_size: int, evidence: str,
-                    endpoint: str | None = None) -> dict:
+                    endpoint: str | None = None, stage: str = "uploaded") -> dict:
     if not all(value.strip() for value in (device, transport, remote_path, evidence)):
         raise ValueError("Delivery device, transport, path and evidence must be non-empty")
+    if stage not in DELIVERY_STAGES:
+        raise ValueError(f"Delivery stage must be one of: {', '.join(DELIVERY_STAGES)}")
     if verified_size != candidate["epub_size"]:
         raise ValueError("Verified remote size differs from the built EPUB")
+    existing = [x for x in state["deliveries"] if x["edition"] == candidate["edition"] and x["device"] == device]
+    if existing:
+        delivery = existing[-1]
+        if (delivery["transport"] != transport or delivery["remote_path"] != remote_path
+                or delivery["epub_sha256"] != candidate["epub_sha256"]):
+            raise ValueError("Existing delivery identity differs; inspect the destination before updating")
+        previous_stage = delivery.get("stage")
+        if previous_stage in DELIVERY_STAGES and DELIVERY_STAGES.index(stage) < DELIVERY_STAGES.index(previous_stage):
+            raise ValueError("Delivery stage cannot move backward")
+        if previous_stage == stage:
+            return delivery
+        history = delivery.setdefault("stage_history", [])
+        if previous_stage is None:
+            history.append({"stage": "legacy-verified", "verified_at": delivery["verified_at"],
+                            "evidence": delivery["verification_evidence"]})
+        event = {"stage": stage, "verified_at": now(), "evidence": evidence}
+        history.append(event)
+        delivery.update({"stage": stage, "verified_at": event["verified_at"], "verification_evidence": evidence})
+        dump_json(root / "lifecycle.json", state)
+        return delivery
     if state.get("pending") and state["pending"]["edition"] == candidate["edition"]:
         state["releases"].append(state["pending"])
         state["pending"] = None
-    existing = [x for x in state["deliveries"] if x["edition"] == candidate["edition"] and x["device"] == device]
-    if existing:
-        raise ValueError("This edition already has a delivery record for that device")
+    verified_at = now()
     delivery = {"edition": candidate["edition"], "device": device, "transport": transport,
                 "remote_path": remote_path, "verified_size": verified_size,
-                "epub_sha256": candidate["epub_sha256"], "verified_at": now(),
-                "verification_evidence": evidence}
+                "epub_sha256": candidate["epub_sha256"], "verified_at": verified_at,
+                "verification_evidence": evidence, "stage": stage,
+                "stage_history": [{"stage": stage, "verified_at": verified_at, "evidence": evidence}]}
     if endpoint:
         delivery["endpoint"] = endpoint
     state["deliveries"].append(delivery)
@@ -285,6 +333,7 @@ def main() -> None:
             sub.add_argument("--remote-path", required=True)
             sub.add_argument("--verified-size", type=int, required=True)
             sub.add_argument("--evidence", required=True)
+            sub.add_argument("--stage", choices=DELIVERY_STAGES, default="uploaded")
             sub.add_argument("--endpoint")
     args = parser.parse_args()
     root = args.book_dir.resolve()
@@ -329,9 +378,13 @@ def main() -> None:
             edition = previous["edition"] if previous else (last["edition"] + 1 if last else 1)
             created_at = previous["created_at"] if previous else now()
             epub, html_file = render(book, chapters, edition, created_at, root / "editions")
+            sources = epub.with_suffix(".sources.json")
+            dump_json(sources, source_snapshot(book, chapters, edition, created_at))
             candidate = {"edition": edition, "content_sha256": digest, "created_at": created_at,
                          "epub_path": str(epub.relative_to(root)), "html_path": str(html_file.relative_to(root)),
-                         "epub_sha256": hashlib.sha256(epub.read_bytes()).hexdigest(), "epub_size": epub.stat().st_size}
+                         "epub_sha256": hashlib.sha256(epub.read_bytes()).hexdigest(), "epub_size": epub.stat().st_size,
+                         "sources_path": str(sources.relative_to(root)),
+                         "sources_sha256": hashlib.sha256(sources.read_bytes()).hexdigest()}
             state["pending"] = candidate
             dump_json(root / "lifecycle.json", state)
             result = "pending"
@@ -347,7 +400,7 @@ def main() -> None:
         raise ValueError("Chapter content changed after the last build; build again first")
     if args.command == "record-delivery":
         result = record_delivery(root, state, candidate, args.device, args.transport,
-                                 args.remote_path, args.verified_size, args.evidence, args.endpoint)
+                                 args.remote_path, args.verified_size, args.evidence, args.endpoint, args.stage)
         print(json.dumps(result, ensure_ascii=False))
         return
 
@@ -367,6 +420,18 @@ def main() -> None:
     logged = [d for d in state["deliveries"] if d["edition"] == candidate["edition"] and d["device"] == args.device]
     if logged:
         if matches:
+            matched = next((b for b in matches if b.get("metadata", {}).get("size") == candidate["epub_size"]), None)
+            remote_path = (matched or {}).get("metadata", {}).get("location") or (matched or {}).get("metadata", {}).get("nativeAbsolutePath")
+            if not remote_path:
+                raise ValueError("Matching BOOXDrop file size or path could not be verified")
+            if logged[-1]["remote_path"] != remote_path:
+                raise ValueError("BOOXDrop path differs from the recorded delivery; inspect before retrying")
+            if logged[-1].get("stage") not in DELIVERY_STAGES[1:]:
+                delivery = record_delivery(root, state, candidate, args.device, "booxdrop-local", remote_path,
+                                           candidate["epub_size"], "BOOXDrop listed matching filename, size and path",
+                                           base, "device-file")
+                print(json.dumps({"result": "stage-updated", "delivery": delivery}, ensure_ascii=False))
+                return
             print(json.dumps({"result": "already-delivered", "delivery": logged[-1]}, ensure_ascii=False))
             return
         raise ValueError("Delivery ledger says this edition was sent, but it is not visible in the root library list; inspect before retrying")
@@ -397,7 +462,8 @@ def main() -> None:
     if not remote_path:
         raise ValueError("Library omitted the remote path; delivery not recorded")
     delivery = record_delivery(root, state, candidate, args.device, "booxdrop-local", remote_path,
-                               candidate["epub_size"], "BOOXDrop library listed matching filename, size and path", base)
+                               candidate["epub_size"], "BOOXDrop listed matching filename, size and path", base,
+                               "device-file")
     print(json.dumps({"result": "delivered", "delivery": delivery}, ensure_ascii=False))
 
 

@@ -62,9 +62,10 @@ class BookletLifecycleTests(unittest.TestCase):
             recorded = json.loads(run(
                 "record-delivery", moved, "--device", "Test reader", "--transport", "usb",
                 "--remote-path", "Books/sample-e001.epub", "--verified-size", revised["epub_size"],
-                "--evidence", "Device library showed matching filename and size",
+                "--evidence", "Device library showed matching filename and size", "--stage", "library-indexed",
             ).stdout)
             self.assertEqual(recorded["edition"], 1)
+            self.assertEqual(recorded["stage"], "library-indexed")
             self.assertEqual(json.loads(run("build", moved).stdout)["result"], "unchanged")
 
             chapter = moved / "chapters" / "start.md"
@@ -73,6 +74,68 @@ class BookletLifecycleTests(unittest.TestCase):
             self.assertEqual(second["edition"], 2)
             run("archive", moved)
             self.assertNotEqual(run("build", moved, expect_ok=False).returncode, 0)
+
+    def test_chapter_provenance_is_frozen_with_each_edition(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "book"
+            run("init", root, "--id", "sample", "--title", "A Sample")
+            book = json.loads((root / "book.json").read_text())
+            book["chapters"] = [{"id": "start", "title": "Start", "file": "chapters/start.md",
+                                 "source_refs": [{"kind": "conversation", "id": "discussion-1", "scope": "turns 1-3"}],
+                                 "revision_note": "Initial synthesis"}]
+            (root / "book.json").write_text(json.dumps(book))
+            (root / "chapters" / "start.md").write_text("Same reading text.\n")
+            first = json.loads(run("build", root).stdout)
+            first_sources = json.loads((root / first["sources_path"]).read_text())
+            self.assertEqual(first_sources["chapters"][0]["source_refs"][0]["id"], "discussion-1")
+            run("record-delivery", root, "--device", "Reader", "--transport", "usb",
+                "--remote-path", "Books/sample-e001.epub", "--verified-size", first["epub_size"],
+                "--evidence", "Visible in device folder", "--stage", "device-file")
+
+            book["chapters"][0]["source_refs"].append({"kind": "conversation", "id": "discussion-2"})
+            book["chapters"][0]["revision_note"] = "Added second source"
+            (root / "book.json").write_text(json.dumps(book))
+            self.assertNotEqual(run("record-delivery", root, "--device", "Other reader", "--transport", "usb",
+                                    "--remote-path", "Books/sample-e001.epub", "--verified-size", first["epub_size"],
+                                    "--evidence", "Stale build", "--stage", "device-file",
+                                    expect_ok=False).returncode, 0)
+            second = json.loads(run("build", root).stdout)
+            self.assertEqual(second["edition"], 2)
+            self.assertEqual(json.loads((root / first["sources_path"]).read_text()), first_sources)
+            second_sources = json.loads((root / second["sources_path"]).read_text())
+            self.assertEqual(len(second_sources["chapters"][0]["source_refs"]), 2)
+            self.assertEqual(second_sources["chapters"][0]["revision_note"], "Added second source")
+
+    def test_delivery_stage_progression_and_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "book"
+            run("init", root, "--id", "sample", "--title", "A Sample")
+            book = json.loads((root / "book.json").read_text())
+            book["chapters"] = [{"id": "start", "title": "Start", "file": "chapters/start.md"}]
+            (root / "book.json").write_text(json.dumps(book))
+            (root / "chapters" / "start.md").write_text("Hello reader.\n")
+            candidate = json.loads(run("build", root).stdout)
+            command = ("record-delivery", root, "--device", "Reader", "--transport", "cloud",
+                       "--remote-path", "Books/sample-e001.epub", "--verified-size", candidate["epub_size"])
+            uploaded = json.loads(run(*command, "--evidence", "Cloud accepted file", "--stage", "uploaded").stdout)
+            self.assertEqual(uploaded["stage"], "uploaded")
+            legacy_state = json.loads((root / "lifecycle.json").read_text())
+            legacy_state["deliveries"][0].pop("stage")
+            legacy_state["deliveries"][0].pop("stage_history")
+            (root / "lifecycle.json").write_text(json.dumps(legacy_state))
+            indexed = json.loads(run(*command, "--evidence", "Visible in reader library",
+                                     "--stage", "library-indexed").stdout)
+            self.assertEqual([event["stage"] for event in indexed["stage_history"]],
+                             ["legacy-verified", "library-indexed"])
+            self.assertEqual(json.loads(run(*command, "--evidence", "Repeated check",
+                                            "--stage", "library-indexed").stdout)["stage_history"],
+                             indexed["stage_history"])
+            self.assertNotEqual(run(*command, "--evidence", "Old stage", "--stage", "device-file",
+                                    expect_ok=False).returncode, 0)
+            self.assertNotEqual(run("record-delivery", root, "--device", "Reader", "--transport", "cloud",
+                                    "--remote-path", "Other/sample-e001.epub", "--verified-size", candidate["epub_size"],
+                                    "--evidence", "Different file", "--stage", "opened", expect_ok=False).returncode, 0)
+            self.assertEqual(len(json.loads((root / "lifecycle.json").read_text())["deliveries"]), 1)
 
     def test_rejects_public_and_loopback_delivery_hosts(self):
         module = load_script()
@@ -144,7 +207,9 @@ class BookletLifecycleTests(unittest.TestCase):
                 with patch.object(module, "device_url", return_value=address), patch.object(sys, "argv", args):
                     with redirect_stdout(io.StringIO()) as output:
                         module.main()
-                    self.assertEqual(json.loads(output.getvalue())["result"], "delivered")
+                    delivered = json.loads(output.getvalue())
+                    self.assertEqual(delivered["result"], "delivered")
+                    self.assertEqual(delivered["delivery"]["stage"], "device-file")
                     with redirect_stdout(io.StringIO()) as second_output:
                         module.main()
                     self.assertEqual(json.loads(second_output.getvalue())["result"], "already-delivered")
