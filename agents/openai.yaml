@@ -1,4 +1,4 @@
 interface:
-  display_name: "Ebook Booklet"
+  display_name: "Folio"
   short_description: "Create, update, and deliver EPUB booklets to e-readers"
-  default_prompt: "Use $ebook to turn this conversation into a chaptered booklet for my e-reader."
+  default_prompt: "Use $folio to turn this conversation into a chaptered booklet for my e-reader."
