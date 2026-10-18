@@ -1,6 +1,6 @@
 # Folio
 
-A reusable Codex skill for turning a selected conversation or note series into a chaptered, versioned EPUB booklet and delivering it to an e-reader. The content workflow is shared; the transfer route depends on the brand and model. The repository is named `folio`, and the skill entry is `$folio`.
+A reusable Codex skill for turning a selected conversation, note series, or webpage into a chaptered, versioned EPUB booklet and delivering it to an e-reader. It also supports parallel-text editions. The content workflow is shared; the transfer route depends on the brand and model. The repository is named `folio`, and the skill entry is `$folio`.
 
 **中文简介：** 用 `$folio` 把指定对话整理成分章节 EPUB，并默认传到阅读器、核实交付。后续补充内容会沿用同一本小册的章节和版次。只有明确说“只要草稿／文件”时才跳过传送。
 
@@ -21,6 +21,8 @@ Then invoke it in a Codex task:
 The skill can locate and update an existing booklet object. An explicit `$folio` invocation includes delivery by default, even if the request does not repeat "send." It looks for a known reader in the conversation or delivery history and asks for missing connection details early. Tell it which conversation or local notes to use and which device you intend to read on when that is not already known. A plain ChatGPT conversation may not have access to local Codex skills; start the task in Codex and reference that conversation when available.
 
 You can ask Folio to preserve the original wording of a source article or note. It will keep the text in order, record provenance, and identify media that could not be included in the EPUB.
+
+For a webpage URL, Folio uses the browser's Print / Save as PDF interface through computer use to capture a source snapshot. It checks the print preview and saved PDF for clipping or missing sections, choosing paper size and scale for the actual page rather than assuming A4. A request for an English–Chinese or other parallel-text edition keeps original and translated passages aligned; when you specify Astra, Folio uses that model or tells you if a model switch is needed.
 
 If you previously installed this skill as `ebook`, remove the old skill folder after installing `folio` so Codex does not show two entries for the same workflow. Existing booklet objects and edition identifiers remain valid.
 
