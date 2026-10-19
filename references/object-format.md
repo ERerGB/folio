@@ -9,6 +9,9 @@ books/<object-id>/
   chapters/
     01-introduction.md
     02-question.md
+  assets/
+    cover.png
+    figure-001.png
   editions/
     <stem>-e001.epub
     <stem>-e001.html
@@ -21,7 +24,9 @@ Example `book.json`:
 {
   "id": "sample-question",
   "title": "A Sample Question",
+  "reader_title": "Sample Question",
   "filename_stem": "sample-question",
+  "cover": {"file": "assets/cover.png", "sha256": "<sha256-of-cover-file>", "method": "user-supplied"},
   "subtitle": "A short research booklet",
   "language": "en",
   "description": "An exploratory booklet; claims require review.",
@@ -39,7 +44,7 @@ Example `book.json`:
 }
 ```
 
-Chapter IDs remain stable across editions. Use a new chapter when the argument actually gains a new section; otherwise edit the existing chapter. Optional chapter `source_refs` connect that chapter to its source turns or files; `revision_note` explains the current change. Each build saves a private `.sources.json` snapshot with chapter content hashes, sources, and revision notes. A later source or revision-note edit creates a new edition after delivery, even if the reading text stays the same. Old book objects without chapter metadata still work. A source reference records origin, not proof of a claim. The builder supports paragraphs, `##`/`###` headings, lists, blockquotes, emphasis, and HTTP(S) Markdown links. Convert tables and embedded app UI into readable prose or lists.
+Chapter IDs remain stable across editions. Use a new chapter when the argument actually gains a new section; otherwise edit the existing chapter. Optional chapter `source_refs` connect that chapter to its source turns or files; `revision_note` explains the current change. Each build saves a private `.sources.json` snapshot with chapter content hashes, sources, revision notes, and included media hashes. A later source or revision-note edit creates a new edition after delivery, even if the reading text stays the same. Old book objects without chapter metadata still work. A source reference records origin, not proof of a claim. The builder supports paragraphs, `##`/`###` headings, lists, blockquotes, emphasis, HTTP(S) Markdown links, standalone local Markdown images, and `:::pair` / `:::zh` / `:::end` paragraph-alignment blocks. Convert tables and embedded app UI into readable prose or lists. For image placement, cover provenance, and short device titles, read [booklet media and reader labels](media-and-reader-labels.md).
 
 Typical commands, from this repository root:
 

@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
+from xml.etree import ElementTree
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "booklet.py"
@@ -34,6 +35,68 @@ def run(*args, expect_ok=True):
 
 
 class BookletLifecycleTests(unittest.TestCase):
+    def test_cover_reader_title_and_inline_figures_survive_rebuild(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "book"
+            run("init", root, "--id", "sample", "--title", "A Very Long Original Article Title")
+            (root / "assets").mkdir()
+            figure = root / "assets" / "figure.png"
+            cover = root / "assets" / "cover.png"
+            figure.write_bytes(b"figure-v1")
+            cover.write_bytes(b"cover-v1")
+            book = json.loads((root / "book.json").read_text())
+            book.update({"reader_title": "Short Shelf Label", "filename_stem": "short-label",
+                         "cover": {"file": "assets/cover.png"},
+                         "chapters": [{"id": "start", "title": "Start", "file": "chapters/start.md"}]})
+            (root / "book.json").write_text(json.dumps(book))
+            (root / "chapters" / "start.md").write_text(
+                ":::pair\nOriginal text.\n:::zh\n译文。\n:::end\n\n![Figure caption](../assets/figure.png)\n"
+            )
+            first = json.loads(run("build", root).stdout)
+            self.assertEqual(Path(first["epub_path"]).name, "short-label-e001.epub")
+            with ZipFile(root / first["epub_path"]) as archive:
+                opf = ElementTree.fromstring(archive.read("OEBPS/content.opf"))
+                ns = {"opf": "http://www.idpf.org/2007/opf", "dc": "http://purl.org/dc/elements/1.1/"}
+                self.assertEqual(opf.find("opf:metadata/dc:title", ns).text, "Short Shelf Label")
+                cover_items = [item for item in opf.findall("opf:manifest/opf:item", ns)
+                               if item.attrib.get("properties") == "cover-image"]
+                self.assertEqual(len(cover_items), 1)
+                self.assertEqual(archive.read("OEBPS/" + cover_items[0].attrib["href"]), b"cover-v1")
+                self.assertEqual(opf.find("opf:spine/opf:itemref", ns).attrib["idref"], "cover-page")
+                chapter = archive.read("OEBPS/chapter-1.xhtml").decode()
+                self.assertIn("A Very Long Original Article Title", archive.read("OEBPS/cover.xhtml").decode())
+                self.assertIn('class="parallel-pair"', chapter)
+                self.assertIn('class="translation"', chapter)
+                self.assertNotIn(":::pair", chapter)
+                self.assertIn("Figure caption", chapter)
+                self.assertIn(b"figure-v1", [archive.read(name) for name in archive.namelist()
+                                               if name.startswith("OEBPS/assets/")])
+            self.assertEqual(json.loads(run("build", root).stdout)["result"], "pending")
+            self.assertEqual(json.loads(run("build", root).stdout)["epub_sha256"], first["epub_sha256"])
+            figure.write_bytes(b"figure-v2")
+            revised = json.loads(run("build", root).stdout)
+            self.assertEqual(revised["edition"], 1)
+            self.assertNotEqual(revised["epub_sha256"], first["epub_sha256"])
+            run("record-delivery", root, "--device", "Reader", "--transport", "usb",
+                "--remote-path", "Books/short-label-e001.epub", "--verified-size", revised["epub_size"],
+                "--evidence", "Visible in reader folder", "--stage", "device-file")
+            cover.write_bytes(b"cover-v2")
+            second = json.loads(run("build", root).stdout)
+            self.assertEqual(second["edition"], 2)
+            self.assertTrue((root / first["epub_path"]).exists())
+            self.assertEqual(json.loads(run("build", root).stdout)["epub_sha256"], second["epub_sha256"])
+
+    def test_rejects_image_outside_booklet(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "book"
+            run("init", root, "--id", "sample", "--title", "Sample")
+            book = json.loads((root / "book.json").read_text())
+            book["chapters"] = [{"id": "start", "title": "Start", "file": "chapters/start.md"}]
+            (root / "book.json").write_text(json.dumps(book))
+            (root / "chapters" / "start.md").write_text("![Private](../../outside.png)\n")
+            (Path(temp) / "outside.png").write_bytes(b"private")
+            self.assertNotEqual(run("build", root, expect_ok=False).returncode, 0)
+
     def test_build_revision_delivery_and_move(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "book"
