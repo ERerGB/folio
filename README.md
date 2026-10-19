@@ -20,7 +20,7 @@ Then invoke it in a Codex task:
 
 The skill can locate and update an existing booklet object. An explicit `$folio` invocation includes delivery by default, even if the request does not repeat "send." It looks for a known reader in the conversation or delivery history and asks for missing connection details early. Tell it which conversation or local notes to use and which device you intend to read on when that is not already known. A plain ChatGPT conversation may not have access to local Codex skills; start the task in Codex and reference that conversation when available.
 
-You can ask Folio to preserve the original wording of a source article or note. It will keep the text in order, record provenance, and identify media that could not be included in the EPUB.
+You can ask Folio to preserve the original wording of a source article or note. It keeps the text and local source figures in reading order, records provenance, and identifies media that could not be included in the EPUB. A private cover image can be embedded as the EPUB cover, and a short reader-facing title keeps similar books distinguishable on a narrow device shelf while the full title stays inside the book.
 
 For a webpage URL, Folio uses the browser's Print / Save as PDF interface through computer use to capture a source snapshot. It checks the print preview and saved PDF for clipping or missing sections, choosing paper size and scale for the actual page rather than assuming A4. A request for an English–Chinese or other parallel-text edition keeps original and translated passages aligned; when you specify Astra, Folio uses that model or tells you if a model switch is needed.
 

@@ -8,6 +8,7 @@ import hashlib
 import html
 import ipaddress
 import json
+import os
 import re
 import shutil
 import sys
@@ -19,8 +20,10 @@ from xml.etree import ElementTree
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 
-STYLE = """html{background:#fff;color:#111}body{max-width:42em;margin:0 auto;padding:1.2em 1.2em 4em;font-family:serif;font-size:1.05em;line-height:1.8}h1,h2,h3{line-height:1.35}h1{font-size:1.6em}h2{font-size:1.25em}h3{font-size:1.1em}p{margin:1em 0}blockquote{border-left:.16em solid #555;margin:1.3em 0;padding:0 0 0 1em}li{margin:.35em 0}a{color:inherit}.subtitle,.note{color:#444}.chapter{break-before:page}"""
+STYLE = """html{background:#fff;color:#111}body{max-width:42em;margin:0 auto;padding:1.2em 1.2em 4em;font-family:serif;font-size:1.05em;line-height:1.8}h1,h2,h3{line-height:1.35}h1{font-size:1.6em}h2{font-size:1.25em}h3{font-size:1.1em}p{margin:1em 0}blockquote{border-left:.16em solid #555;margin:1.3em 0;padding:0 0 0 1em}li{margin:.35em 0}a{color:inherit}.subtitle,.note{color:#444}.chapter{break-before:page}figure{margin:1.5em 0;break-inside:avoid}figure img{display:block;max-width:100%;height:auto;margin:auto}figcaption{font-size:.85em;color:#444;text-align:center}.parallel-pair{margin:1em 0}.translation{color:#333}.cover{break-after:page;text-align:center}.cover img{max-width:100%;max-height:90vh;object-fit:contain}"""
 DELIVERY_STAGES = ("uploaded", "device-file", "library-indexed", "opened")
+IMAGE_LINE = re.compile(r"^!\[([^\]]*)\]\(([^)\s]+)\)$")
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif"}
 
 
 def now() -> str:
@@ -66,7 +69,8 @@ def load_book(root: Path) -> tuple[dict, list[dict]]:
         path = (root / item["file"]).resolve()
         if not path.is_relative_to(root.resolve()) or not path.is_file():
             raise ValueError(f"Chapter file missing or outside object: {item['file']}")
-        chapter = {"id": chapter_id, "title": item["title"], "text": path.read_text(encoding="utf-8")}
+        chapter = {"id": chapter_id, "title": item["title"], "file": item["file"],
+                   "text": path.read_text(encoding="utf-8")}
         if "source_refs" in item:
             refs = item["source_refs"]
             if not isinstance(refs, list) or any(
@@ -83,20 +87,75 @@ def load_book(root: Path) -> tuple[dict, list[dict]]:
     return book, chapters
 
 
-def content_hash(book: dict, chapters: list[dict]) -> str:
+def media_inventory(root: Path, book: dict, chapters: list[dict]) -> tuple[dict[Path, dict], Path | None]:
+    media: dict[Path, dict] = {}
+
+    def add(path: Path) -> Path:
+        path = path.resolve()
+        if not path.is_relative_to(root.resolve()) or not path.is_file():
+            raise ValueError(f"Image missing or outside booklet object: {path}")
+        kind = IMAGE_TYPES.get(path.suffix.lower())
+        if not kind:
+            raise ValueError(f"Unsupported image format: {path.suffix}")
+        if path not in media:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            media[path] = {"sha256": digest, "href": f"assets/{digest[:16]}{path.suffix.lower()}",
+                           "media_type": kind, "path": path.relative_to(root.resolve()).as_posix()}
+        return path
+
+    cover = book.get("cover")
+    cover_path = None
+    if cover is not None:
+        if not isinstance(cover, dict) or not isinstance(cover.get("file"), str):
+            raise ValueError("cover must contain a local file path")
+        cover_path = add(root / cover["file"])
+        if cover.get("sha256") and cover["sha256"] != media[cover_path]["sha256"]:
+            raise ValueError("Cover file differs from its declared SHA-256")
+    for chapter in chapters:
+        chapter_dir = (root / chapter["file"]).parent
+        for line in chapter["text"].splitlines():
+            if line.lstrip().startswith("!["):
+                match = IMAGE_LINE.fullmatch(line.strip())
+                if not match:
+                    raise ValueError(f"Unsupported image reference in chapter {chapter['id']}")
+                add(chapter_dir / match.group(2))
+    return media, cover_path
+
+
+def content_hash(book: dict, chapters: list[dict], root: Path | None = None) -> str:
     content = {"id": book["id"], "title": book["title"], "filename_stem": book.get("filename_stem", book["id"]), "subtitle": book.get("subtitle", ""),
                "language": book.get("language", "en"), "description": book.get("description", ""),
-               "chapters": chapters}
+               "chapters": [{key: value for key, value in chapter.items() if key != "file"}
+                            for chapter in chapters]}
+    if "reader_title" in book:
+        content["reader_title"] = book["reader_title"]
+    if root is not None:
+        media, cover_path = media_inventory(root, book, chapters)
+        if media:
+            content["media"] = {entry["path"]: entry["sha256"] for entry in media.values()}
+        if cover_path is not None:
+            content["cover"] = book["cover"]
     return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def source_snapshot(book: dict, chapters: list[dict], edition: int, created_at: str) -> dict:
-    return {"book_id": book["id"], "edition": edition, "created_at": created_at,
+def source_snapshot(book: dict, chapters: list[dict], edition: int, created_at: str,
+                    root: Path | None = None) -> dict:
+    snapshot = {"book_id": book["id"], "edition": edition, "created_at": created_at,
             "chapters": [{"id": ch["id"], "title": ch["title"],
                           "content_sha256": hashlib.sha256(ch["text"].encode("utf-8")).hexdigest(),
                           "source_refs": ch.get("source_refs", []),
                           "revision_note": ch.get("revision_note", "")}
                          for ch in chapters]}
+    if root is not None:
+        media, _ = media_inventory(root, book, chapters)
+        if media:
+            snapshot["media"] = [{"file": entry["path"], "sha256": entry["sha256"]}
+                                 for entry in sorted(media.values(), key=lambda item: item["path"])]
+        if book.get("cover"):
+            snapshot["cover"] = book["cover"]
+        if "reader_title" in book:
+            snapshot["reader_title"] = book["reader_title"]
+    return snapshot
 
 
 def inline(text: str) -> str:
@@ -107,10 +166,11 @@ def inline(text: str) -> str:
     return re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", value)
 
 
-def render_markdown(source: str) -> str:
+def render_markdown(source: str, image_src=None) -> str:
     blocks: list[str] = []
     pending: list[str] = []
     mode = "paragraph"
+    pair = None
 
     def flush() -> None:
         nonlocal pending
@@ -128,6 +188,34 @@ def render_markdown(source: str) -> str:
         line = raw.strip()
         if not line:
             flush()
+            mode = "paragraph"
+            continue
+        if line in (":::pair", ":::zh", ":::end"):
+            flush()
+            if line == ":::pair" and pair is None:
+                blocks.append('<div class="parallel-pair"><div class="source-text">')
+                pair = "source"
+            elif line == ":::zh" and pair == "source":
+                blocks.append('</div><div class="translation" lang="zh" xml:lang="zh">')
+                pair = "translation"
+            elif line == ":::end" and pair == "translation":
+                blocks.append("</div></div>")
+                pair = None
+            else:
+                raise ValueError(f"Invalid parallel-text directive: {line}")
+            mode = "paragraph"
+            continue
+        if line.startswith(":::"):
+            raise ValueError(f"Unknown parallel-text directive: {line}")
+        if line.startswith("!["):
+            match = IMAGE_LINE.fullmatch(line)
+            if not match or image_src is None:
+                raise ValueError(f"Unsupported image reference: {line}")
+            flush()
+            caption = html.escape(match.group(1), quote=True)
+            src = html.escape(image_src(match.group(2)), quote=True)
+            blocks.append(f'<figure><img src="{src}" alt="{caption}"/>'
+                          + (f'<figcaption>{caption}</figcaption>' if caption else "") + '</figure>')
             mode = "paragraph"
             continue
         heading = re.match(r"^(#{2,3})\s+(.+)$", line)
@@ -149,6 +237,8 @@ def render_markdown(source: str) -> str:
             flush()
             mode = new_mode
         pending.append(value)
+    if pair is not None:
+        raise ValueError("Unclosed parallel-text pair")
     return "\n".join(blocks)
 
 
@@ -165,8 +255,16 @@ def zip_write(zf: ZipFile, name: str, text: str, compression: int = ZIP_DEFLATED
     zf.writestr(info, text.encode("utf-8"))
 
 
-def render(book: dict, chapters: list[dict], edition: int, created_at: str, out_dir: Path) -> tuple[Path, Path]:
+def zip_write_bytes(zf: ZipFile, name: str, value: bytes) -> None:
+    info = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = ZIP_DEFLATED
+    zf.writestr(info, value)
+
+
+def render(root: Path, book: dict, chapters: list[dict], edition: int, created_at: str,
+           out_dir: Path) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    media, cover_path = media_inventory(root, book, chapters)
     stem_base = re.sub(r'[\\/:*?"<>|]+', "-", book.get("filename_stem", book["id"])).strip(" .")
     if not stem_base or len(stem_base) > 80:
         raise ValueError("filename_stem must be 1–80 safe characters")
@@ -175,17 +273,31 @@ def render(book: dict, chapters: list[dict], edition: int, created_at: str, out_
     lang = book.get("language", "en")
     labels = {"edition": "第 {number} 版", "download": "下载 EPUB", "contents": "目录"} if lang.lower().startswith("zh") else {"edition": "Edition {number}", "download": "Download EPUB", "contents": "Contents"}
     title = book["title"]
+    reader_title = book.get("reader_title", title)
+    if not isinstance(reader_title, str) or not reader_title.strip():
+        raise ValueError("reader_title must be non-empty text")
     subtitle = book.get("subtitle", "")
     description = book.get("description", "")
-    rendered = [render_markdown(ch["text"]) for ch in chapters]
+    def resolve_image(chapter: dict, href: str, epub: bool) -> str:
+        source = ((root / chapter["file"]).parent / href).resolve()
+        if source not in media:
+            raise ValueError(f"Image not listed for chapter {chapter['id']}: {href}")
+        return media[source]["href"] if epub else os.path.relpath(source, out_dir)
+
+    rendered_html = [render_markdown(ch["text"], lambda href, ch=ch: resolve_image(ch, href, False))
+                     for ch in chapters]
+    rendered_epub = [render_markdown(ch["text"], lambda href, ch=ch: resolve_image(ch, href, True))
+                     for ch in chapters]
     toc = "".join(f'<li><a href="#chapter-{html.escape(ch["id"])}">{html.escape(ch["title"])}</a></li>' for ch in chapters)
-    sections = "".join(f'<section class="chapter" id="chapter-{html.escape(ch["id"])}"><h2>{html.escape(ch["title"])}</h2>{body}</section>' for ch, body in zip(chapters, rendered))
+    sections = "".join(f'<section class="chapter" id="chapter-{html.escape(ch["id"])}"><h2>{html.escape(ch["title"])}</h2>{body}</section>' for ch, body in zip(chapters, rendered_html))
+    cover_html = (f'<section class="cover"><img src="{html.escape(os.path.relpath(cover_path, out_dir))}"'
+                  f' alt="{html.escape(title, quote=True)}"/></section>') if cover_path else ""
     html_page = (f'<!doctype html><html lang="{html.escape(lang)}"><head><meta charset="utf-8">'
                  f'<meta name="viewport" content="width=device-width, initial-scale=1"><title>{html.escape(title)}</title>'
                  f'<style>{STYLE}</style></head><body><main><h1>{html.escape(title)}</h1>'
                  f'<p class="subtitle">{html.escape(subtitle)} · {labels["edition"].format(number=edition)}</p>'
                  f'<p class="note">{html.escape(description)}</p><p><a href="{epub_path.name}">{labels["download"]}</a></p>'
-                 f'<nav><h2>{labels["contents"]}</h2><ol>{toc}</ol></nav>{sections}</main></body></html>')
+                 f'{cover_html}<nav><h2>{labels["contents"]}</h2><ol>{toc}</ol></nav>{sections}</main></body></html>')
     html_path.write_text(html_page, encoding="utf-8")
 
     nav_items = "".join(f'<li><a href="chapter-{i}.xhtml">{html.escape(ch["title"])}</a></li>' for i, ch in enumerate(chapters, 1))
@@ -197,14 +309,22 @@ def render(book: dict, chapters: list[dict], edition: int, created_at: str, out_
     manifest = ['<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
                 '<item id="style" href="style.css" media-type="text/css"/>']
     spine = []
+    if cover_path:
+        manifest.append('<item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>')
+        spine.append('<itemref idref="cover-page"/>')
     for i in range(1, len(chapters) + 1):
         manifest.append(f'<item id="c{i}" href="chapter-{i}.xhtml" media-type="application/xhtml+xml"/>')
         spine.append(f'<itemref idref="c{i}"/>')
+    for i, (path, entry) in enumerate(sorted(media.items(), key=lambda item: item[1]["href"]), 1):
+        properties = ' properties="cover-image"' if path == cover_path else ""
+        manifest.append(f'<item id="image-{i}" href="{entry["href"]}"'
+                        f' media-type="{entry["media_type"]}"{properties}/>')
+    metadata_description = f"{title}. {description}" if reader_title != title else description
     opf = (f'<?xml version="1.0" encoding="UTF-8"?>'
            f'<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid" xml:lang="{html.escape(lang)}">'
            f'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="bookid">urn:uuid:{uuid5(NAMESPACE_URL, "ebook:" + book["id"])}</dc:identifier>'
-           f'<dc:title>{html.escape(title)}</dc:title><dc:language>{html.escape(lang)}</dc:language>'
-           f'<dc:description>{html.escape(description)}</dc:description><meta property="dcterms:modified">{created_at}</meta>'
+           f'<dc:title>{html.escape(reader_title)}</dc:title><dc:language>{html.escape(lang)}</dc:language>'
+           f'<dc:description>{html.escape(metadata_description)}</dc:description><meta property="dcterms:modified">{created_at}</meta>'
            f'</metadata><manifest>{"".join(manifest)}</manifest><spine>{"".join(spine)}</spine></package>')
     container = ('<?xml version="1.0" encoding="UTF-8"?><container version="1.0" '
                  'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
@@ -216,8 +336,14 @@ def render(book: dict, chapters: list[dict], edition: int, created_at: str, out_
         zip_write(zf, "OEBPS/content.opf", opf)
         zip_write(zf, "OEBPS/nav.xhtml", nav)
         zip_write(zf, "OEBPS/style.css", STYLE)
-        for i, (ch, body) in enumerate(zip(chapters, rendered), 1):
+        if cover_path:
+            cover_body = (f'<section class="cover"><img src="{media[cover_path]["href"]}"'
+                          f' alt="{html.escape(title, quote=True)}"/><h1>{html.escape(title)}</h1></section>')
+            zip_write(zf, "OEBPS/cover.xhtml", xhtml(title, cover_body, lang))
+        for i, (ch, body) in enumerate(zip(chapters, rendered_epub), 1):
             zip_write(zf, f"OEBPS/chapter-{i}.xhtml", xhtml(ch["title"], f'<h1>{html.escape(ch["title"])}</h1>{body}', lang))
+        for entry in media.values():
+            zip_write_bytes(zf, "OEBPS/" + entry["href"], (root / entry["path"]).read_bytes())
     with ZipFile(epub_path) as zf:
         assert zf.namelist()[0] == "mimetype" and zf.read("mimetype") == b"application/epub+zip"
         for name in zf.namelist():
@@ -308,7 +434,7 @@ def device_url(host: str) -> str:
 
 
 def current_digest(root: Path) -> str:
-    return content_hash(*load_book(root))
+    return content_hash(*load_book(root), root)
 
 
 def main() -> None:
@@ -365,7 +491,7 @@ def main() -> None:
         if state["archived"]:
             raise ValueError("Object is archived; resume before building")
         book, chapters = load_book(root)
-        digest = content_hash(book, chapters)
+        digest = content_hash(book, chapters, root)
         last = state["releases"][-1] if state["releases"] else None
         if last and last["content_sha256"] == digest:
             if state.get("pending"):
@@ -377,9 +503,9 @@ def main() -> None:
             previous = state.get("pending")
             edition = previous["edition"] if previous else (last["edition"] + 1 if last else 1)
             created_at = previous["created_at"] if previous else now()
-            epub, html_file = render(book, chapters, edition, created_at, root / "editions")
+            epub, html_file = render(root, book, chapters, edition, created_at, root / "editions")
             sources = epub.with_suffix(".sources.json")
-            dump_json(sources, source_snapshot(book, chapters, edition, created_at))
+            dump_json(sources, source_snapshot(book, chapters, edition, created_at, root))
             candidate = {"edition": edition, "content_sha256": digest, "created_at": created_at,
                          "epub_path": str(epub.relative_to(root)), "html_path": str(html_file.relative_to(root)),
                          "epub_sha256": hashlib.sha256(epub.read_bytes()).hexdigest(), "epub_size": epub.stat().st_size,
