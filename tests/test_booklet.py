@@ -1,4 +1,6 @@
 import json
+import base64
+from html.parser import HTMLParser
 import importlib.util
 import io
 import subprocess
@@ -85,6 +87,62 @@ class BookletLifecycleTests(unittest.TestCase):
             self.assertEqual(second["edition"], 2)
             self.assertTrue((root / first["epub_path"]).exists())
             self.assertEqual(json.loads(run("build", root).stdout)["epub_sha256"], second["epub_sha256"])
+
+    def test_export_contains_cover_and_figures_without_private_paths(self):
+        class Images(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.sources = []
+            def handle_starttag(self, tag, attrs):
+                if tag == "img":
+                    self.sources.append(dict(attrs)["src"])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private-book"
+            exported = Path(temp) / "exported"
+            run("init", root, "--id", "sample", "--title", "Sample")
+            (root / "assets").mkdir()
+            (root / "assets/figure.png").write_bytes(b"synthetic-figure")
+            (root / "assets/cover.png").write_bytes(b"synthetic-cover")
+            book = json.loads((root / "book.json").read_text())
+            book.update({"cover": {"file": "assets/cover.png"},
+                         "chapters": [{"id": "start", "title": "Start", "file": "chapters/start.md"}]})
+            (root / "book.json").write_text(json.dumps(book))
+            (root / "chapters/start.md").write_text("![Figure](../assets/figure.png)\n")
+            built = json.loads(run("build", root, "--export-dir", exported).stdout)
+            page = (exported / Path(built["html_path"]).name).read_text()
+            images = Images()
+            images.feed(page)
+            self.assertEqual(len(images.sources), 2)
+            self.assertTrue(all(src.startswith("data:image/png;base64,") for src in images.sources))
+            self.assertEqual({base64.b64decode(src.split(",", 1)[1]) for src in images.sources},
+                             {b"synthetic-cover", b"synthetic-figure"})
+            self.assertEqual({f.suffix for f in exported.iterdir()}, {".epub", ".html"})
+            self.assertEqual((exported / Path(built["epub_path"]).name).read_bytes(),
+                             (root / built["epub_path"]).read_bytes())
+            self.assertNotIn(str(root), page)
+
+    def test_book_level_provenance_is_frozen_and_versioned(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "book"
+            run("init", root, "--id", "sample", "--title", "Sample")
+            book = json.loads((root / "book.json").read_text())
+            book["chapters"] = [{"id": "start", "title": "Start", "file": "chapters/start.md"}]
+            book["source_refs"] = [{"kind": "note", "id": "first-source"}]
+            (root / "book.json").write_text(json.dumps(book))
+            (root / "chapters/start.md").write_text("Same text.\n")
+            first = json.loads(run("build", root).stdout)
+            snapshot = json.loads((root / first["sources_path"]).read_text())
+            self.assertEqual(snapshot["source_refs"], book["source_refs"])
+            run("record-delivery", root, "--device", "Fixture reader", "--transport", "fixture",
+                "--remote-path", "Books/sample-e001.epub", "--verified-size", first["epub_size"],
+                "--evidence", "Synthetic observed file", "--stage", "device-file")
+            book["source_refs"].append({"kind": "note", "id": "second-source"})
+            (root / "book.json").write_text(json.dumps(book))
+            second = json.loads(run("build", root).stdout)
+            self.assertEqual(second["edition"], 2)
+            self.assertEqual(json.loads((root / first["sources_path"]).read_text()), snapshot)
+            self.assertEqual(json.loads((root / second["sources_path"]).read_text())["source_refs"],
+                             book["source_refs"])
 
     def test_rejects_image_outside_booklet(self):
         with tempfile.TemporaryDirectory() as temp:
