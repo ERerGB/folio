@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import html
 import ipaddress
@@ -59,6 +60,13 @@ def load_book(root: Path) -> tuple[dict, list[dict]]:
         raise ValueError("book.id must use lowercase letters, digits and hyphens")
     if not book.get("title") or not book.get("chapters"):
         raise ValueError("book.json needs a title and at least one chapter")
+    if "source_refs" in book:
+        refs = book["source_refs"]
+        if not isinstance(refs, list) or any(
+            not isinstance(ref, dict) or not all(isinstance(ref.get(key), str) and ref[key].strip()
+                                                 for key in ("kind", "id")) for ref in refs
+        ):
+            raise ValueError("Book needs source_refs with kind and id")
     chapters = []
     seen = set()
     for item in book["chapters"]:
@@ -127,6 +135,8 @@ def content_hash(book: dict, chapters: list[dict], root: Path | None = None) -> 
                "language": book.get("language", "en"), "description": book.get("description", ""),
                "chapters": [{key: value for key, value in chapter.items() if key != "file"}
                             for chapter in chapters]}
+    if book.get("source_refs"):
+        content["source_refs"] = book["source_refs"]
     if "reader_title" in book:
         content["reader_title"] = book["reader_title"]
     if root is not None:
@@ -146,6 +156,8 @@ def source_snapshot(book: dict, chapters: list[dict], edition: int, created_at: 
                           "source_refs": ch.get("source_refs", []),
                           "revision_note": ch.get("revision_note", "")}
                          for ch in chapters]}
+    if book.get("source_refs"):
+        snapshot["source_refs"] = book["source_refs"]
     if root is not None:
         media, _ = media_inventory(root, book, chapters)
         if media:
@@ -373,6 +385,31 @@ def select_candidate(root: Path, state: dict) -> dict:
     return candidate
 
 
+def export_candidate(root: Path, candidate: dict, destination: Path) -> None:
+    """Export only EPUB and standalone HTML; keep private source snapshots local."""
+    epub_path = artifact_path(root, candidate["epub_path"])
+    html_path = artifact_path(root, candidate["html_path"])
+    if (destination / html_path.name).resolve() == html_path.resolve():
+        raise ValueError("Export directory must differ from the private edition directory")
+    page = html_path.read_text(encoding="utf-8")
+
+    def embed_image(match: re.Match) -> str:
+        source = (html_path.parent / html.unescape(match.group(2))).resolve()
+        if not source.is_relative_to(root.resolve()) or not source.is_file():
+            raise ValueError("Export image missing or outside booklet object")
+        media_type = IMAGE_TYPES.get(source.suffix.lower())
+        if not media_type:
+            raise ValueError("Unsupported export image format")
+        encoded = base64.b64encode(source.read_bytes()).decode("ascii")
+        return f'{match.group(1)}data:{media_type};base64,{encoded}{match.group(3)}'
+
+    page = re.sub(r'(<img\b[^>]*\bsrc=")([^"]+)(")', embed_image, page)
+    destination.mkdir(parents=True, exist_ok=True)
+    if (destination / epub_path.name).resolve() != epub_path.resolve():
+        shutil.copy2(epub_path, destination / epub_path.name)
+    (destination / html_path.name).write_text(page, encoding="utf-8")
+
+
 def record_delivery(root: Path, state: dict, candidate: dict, device: str, transport: str,
                     remote_path: str, verified_size: int, evidence: str,
                     endpoint: str | None = None, stage: str = "uploaded") -> dict:
@@ -515,9 +552,8 @@ def main() -> None:
             dump_json(root / "lifecycle.json", state)
             result = "pending"
         if args.export_dir:
-            args.export_dir.mkdir(parents=True, exist_ok=True)
-            for key in ("epub_path", "html_path"):
-                shutil.copy2(artifact_path(root, candidate[key]), args.export_dir / Path(candidate[key]).name)
+            select_candidate(root, state)
+            export_candidate(root, candidate, args.export_dir)
         print(json.dumps({"result": result, **candidate}, ensure_ascii=False))
         return
 

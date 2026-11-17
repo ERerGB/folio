@@ -44,7 +44,7 @@ Example `book.json`:
 }
 ```
 
-Chapter IDs remain stable across editions. Use a new chapter when the argument actually gains a new section; otherwise edit the existing chapter. Optional chapter `source_refs` connect that chapter to its source turns or files; `revision_note` explains the current change. Each build saves a private `.sources.json` snapshot with chapter content hashes, sources, revision notes, and included media hashes. A later source or revision-note edit creates a new edition after delivery, even if the reading text stays the same. Old book objects without chapter metadata still work. A source reference records origin, not proof of a claim. The builder supports paragraphs, `##`/`###` headings, lists, blockquotes, emphasis, HTTP(S) Markdown links, standalone local Markdown images, and `:::pair` / `:::zh` / `:::end` paragraph-alignment blocks. Convert tables and embedded app UI into readable prose or lists. For image placement, cover provenance, and short device titles, read [booklet media and reader labels](media-and-reader-labels.md).
+Chapter IDs remain stable across editions. Use a new chapter when the argument actually gains a new section; otherwise edit the existing chapter. Optional chapter `source_refs` connect that chapter to its source turns or files; `revision_note` explains the current change. Each build saves a private `.sources.json` snapshot with book-level and chapter sources, chapter content hashes, revision notes, and included media hashes. A later source or revision-note edit creates a new edition after delivery, even if the reading text stays the same. Old book objects without chapter metadata still work. A source reference records origin, not proof of a claim. The builder supports paragraphs, `##`/`###` headings, lists, blockquotes, emphasis, HTTP(S) Markdown links, standalone local Markdown images, and `:::pair` / `:::zh` / `:::end` paragraph-alignment blocks. Convert tables and embedded app UI into readable prose or lists. For image placement, cover provenance, and short device titles, read [booklet media and reader labels](media-and-reader-labels.md).
 
 Typical commands, from this repository root:
 
@@ -57,7 +57,7 @@ python3 scripts/booklet.py send-booxdrop /path/to/books/sample-question --host 1
 python3 scripts/booklet.py archive /path/to/books/sample-question
 ```
 
-`build --export-dir` copies only the current EPUB and HTML to a chosen output folder; source snapshots may contain private conversation IDs and stay in the local book object. The lifecycle ledger stores edition file paths relative to the object, so the folder can move. The first recorded external transfer freezes a pending edition; a later content or chapter-provenance edit becomes the next edition.
+`build --export-dir` exports only the current EPUB and a standalone HTML copy with embedded cover/figure images to a chosen output folder; source snapshots may contain private conversation IDs and stay in the local book object. The lifecycle ledger stores edition file paths relative to the object, so the folder can move. The first recorded external transfer freezes a pending edition; a later content or chapter-provenance edit becomes the next edition.
 
 For a delivery made through a vendor app or USB, verify it at the destination, then record the observed result:
 
